@@ -1,0 +1,51 @@
+name: Build APK Campata
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Compila APK release
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Rinomina APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/Campata-1.0.0-build${{ github.run_number }}.apk
+
+      - name: Carica come artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Campata-APK
+          path: out/*.apk
+
+      - name: Pubblica Release (download diretto da telefono)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Campata build ${{ github.run_number }}
+          files: out/*.apk
