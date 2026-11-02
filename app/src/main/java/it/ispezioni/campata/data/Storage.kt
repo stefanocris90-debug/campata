@@ -77,6 +77,79 @@ object Storage {
         return if (f.mkdirs()) f to null else null to "Android non ha permesso di creare la cartella qui. Prova in un'altra posizione."
     }
 
+    private val illegalChars = Regex("[\\\\/:*?\"<>|]")
+
+    /**
+     * Rinomina file o cartella nella stessa posizione. Per i file l'estensione viene conservata
+     * se l'utente la omette. Restituisce il nuovo File oppure il messaggio d'errore.
+     */
+    fun rename(ctx: Context, f: File, rawName: String): Pair<File?, String?> {
+        var name = rawName.trim().replace(illegalChars, "_").trimEnd('.')
+        if (name.isEmpty() || name == "." || name == "..") return null to "Scrivi un nome valido."
+        if (!f.isDirectory && f.extension.isNotEmpty() && !name.contains('.')) name = "$name.${f.extension}"
+        if (name == f.name) return f to null
+        val parent = f.parentFile ?: return null to "Impossibile rinominare la radice della memoria."
+        val target = File(parent, name)
+        // Su file system case-insensitive "Pila" -> "PILA" è lo stesso file: si passa da un nome temporaneo.
+        if (target.exists() && !target.name.equals(f.name, ignoreCase = true))
+            return null to "Esiste già un elemento chiamato \"$name\" in questa cartella."
+        val oldPaths = scanPaths(f)
+        val ok = if (target.name.equals(f.name, ignoreCase = true)) {
+            val tmp = File(parent, ".campata_tmp_${System.nanoTime()}")
+            f.renameTo(tmp) && tmp.renameTo(target)
+        } else f.renameTo(target)
+        if (!ok) return null to "Android non ha permesso di rinominare questo elemento."
+        if (target.isDirectory) TagStore(ctx).movePrefix(f, target)
+        MediaScannerConnection.scanFile(ctx, (oldPaths + scanPaths(target)).toTypedArray(), null, null)
+        return target to null
+    }
+
+    data class MoveResult(val moved: List<File>, val failed: List<String>)
+
+    /**
+     * Sposta i file nella cartella di destinazione. Se esiste già un file con lo stesso nome
+     * aggiunge _1, _2… (nessuna sovrascrittura). renameTo non funziona fra volumi diversi
+     * (memoria interna -> scheda SD): in quel caso copia, verifica la dimensione e cancella l'originale.
+     */
+    fun move(ctx: Context, files: List<File>, dest: File): MoveResult {
+        val moved = ArrayList<File>()
+        val failed = ArrayList<String>()
+        val scan = ArrayList<String>()
+        for (src in files) {
+            if (!src.exists() || src.isDirectory) { failed += src.name; continue }
+            if (src.parentFile?.absolutePath == dest.absolutePath) continue
+            val target = uniqueTarget(dest, src.name)
+            val ok = src.renameTo(target) || try {
+                src.copyTo(target, overwrite = false)
+                target.setLastModified(src.lastModified())
+                if (target.length() == src.length()) src.delete() else { target.delete(); false }
+            } catch (_: Exception) {
+                target.delete(); false
+            }
+            if (ok) { moved += target; scan += src.absolutePath; scan += target.absolutePath } else failed += src.name
+        }
+        if (scan.isNotEmpty()) MediaScannerConnection.scanFile(ctx, scan.toTypedArray(), null, null)
+        return MoveResult(moved, failed)
+    }
+
+    private fun uniqueTarget(dir: File, name: String): File {
+        var f = File(dir, name)
+        if (!f.exists()) return f
+        val base = name.substringBeforeLast('.', name)
+        val ext = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+        var i = 1
+        while (f.exists()) { f = File(dir, "${base}_$i$ext"); i++ }
+        return f
+    }
+
+    private fun scanPaths(f: File): List<String> =
+        if (f.isDirectory) f.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList() else listOf(f.absolutePath)
+
+    /** Sottocartelle visibili, per il selettore di destinazione. */
+    fun subfolders(dir: File): List<File> =
+        dir.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }
+            ?.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }) ?: emptyList()
+
     fun delete(ctx: Context, f: File): Boolean {
         val paths = if (f.isDirectory) f.walkBottomUp().map { it.absolutePath }.toList() else listOf(f.absolutePath)
         val ok = f.deleteRecursively()

@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,6 +29,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,14 +50,17 @@ import it.ispezioni.campata.data.Storage
 import it.ispezioni.campata.ui.theme.C
 import it.ispezioni.campata.ui.theme.TagShape
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
 @Composable
-fun PhotoScreen(file: File, onBack: () -> Unit) {
+fun PhotoScreen(file: File, root: File, onBack: () -> Unit, onMoved: (File) -> Unit) {
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var pickDest by remember { mutableStateOf(false) }
     BackHandler(onBack = onBack)
 
     val meta by produceState<Exif.PhotoMeta?>(null, file.absolutePath) {
@@ -71,6 +79,9 @@ fun PhotoScreen(file: File, onBack: () -> Unit) {
                 file.name, color = Color.White, style = MaterialTheme.typography.titleMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = { pickDest = true }) {
+                Icon(Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = "Sposta foto", tint = Color.White)
+            }
             IconButton(onClick = { Storage.share(ctx, file) }) {
                 Icon(Icons.Outlined.Share, contentDescription = "Condividi foto", tint = Color.White)
             }
@@ -130,5 +141,29 @@ fun PhotoScreen(file: File, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (pickDest) {
+        val parent = file.parentFile ?: root
+        FolderPickerDialog(
+            title = "Sposta foto in…",
+            start = parent,
+            root = root,
+            source = parent,
+            onDismiss = { pickDest = false },
+            onPick = { dest ->
+                pickDest = false
+                scope.launch {
+                    val res = withContext(Dispatchers.IO) { Storage.move(ctx, listOf(file), dest) }
+                    val moved = res.moved.firstOrNull()
+                    if (moved != null) {
+                        Toast.makeText(ctx, "Foto spostata in ${dest.name.ifBlank { "Memoria" }}", Toast.LENGTH_SHORT).show()
+                        onMoved(moved)
+                    } else {
+                        Toast.makeText(ctx, "Spostamento non riuscito", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+        )
     }
 }

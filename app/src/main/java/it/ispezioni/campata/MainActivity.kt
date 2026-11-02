@@ -85,7 +85,9 @@ fun CampataApp() {
             when {
                 photo != null -> PhotoScreen(
                     file = File(photo),
+                    root = File(rootPath),
                     onBack = { photoPath = null; refresh++ },
+                    onMoved = { photoPath = it.absolutePath; refresh++ },
                 )
                 cameraOpen -> CameraScreen(
                     dir = File(currentPath),

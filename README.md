@@ -34,13 +34,22 @@ in chat: si corregge in un passaggio.
 
 - Tocca una cartella per entrarci; il percorso in alto è disegnato come un impalcato,
   ogni campata è una cartella: toccala per risalire.
-- Pressione lunga su un elemento: dettagli, condivisione, eliminazione (con conferma).
+- Pressione lunga su un elemento: dettagli, **sposta**, **rinomina**, condivisione, eliminazione (con conferma).
+- **Spostare foto**: pressione lunga → *Sposta in un'altra cartella*, oppure *Seleziona più file* per
+  spostarne molte insieme (l'icona galleria seleziona tutte le foto della cartella). Nel selettore si
+  naviga fino alla destinazione, si può creare una cartella nuova, poi *Sposta qui*. Nessun file viene
+  sovrascritto: in caso di nome uguale si aggiunge `_1`, `_2`… Si può spostare anche dalla scheda foto.
+- **Rinominare cartelle**: pressione lunga → *Rinomina cartella*. I dati di ispezione memorizzati per
+  la cartella (e le sottocartelle) la seguono; i metadati già scritti nelle foto non cambiano.
 - *Nuova cartella*: nomi rapidi (Pila, Spalla, Campata…), poi l'app entra nella cartella creata.
 - *Scatta qui*: apre il mirino nella cartella corrente.
   - Tocca la fascia in basso per impostare **Opera, Campata, Elemento, Difetto**: restano
     memorizzati per quella cartella.
-  - Tocca il mirino per mettere a fuoco, usa lo zoom per i dettagli lontani, il flash per
-    l'intradosso.
+  - Tocca il mirino per mettere a fuoco, il flash per l'intradosso.
+  - **Zoom** come nella fotocamera di sistema: pulsanti 0.5x, 1x, 2x, 3x, 5x, 30x oppure pinch con due
+    dita; il pulsante attivo mostra il valore reale. 0.5x usa l'ultragrandangolo se il telefono lo rende
+    disponibile alle app; i valori oltre il massimo del telefono sono attenuati e portano al limite.
+    Lo zoom usato viene scritto nella foto (campo `zoom` del JSON in UserComment).
   - Il pallino GNSS indica la qualità del fix: verde ≤ 5 m, giallo ≤ 15 m, rosso oltre.
 - Tocca una foto per la scheda completa: dati di ispezione, coordinate decimali e
   sessagesimali, quota, precisione, copia coordinate, apertura in un'app di mappe.
@@ -55,7 +64,7 @@ Nome file: `AAAAMMGG_hhmmss_<campata>_<elemento>.jpg`, ordinabile per data.
 | GPSLatitude/Longitude, GPSAltitude | posizione WGS84 dal ricevitore del telefono |
 | GPSHPositioningError | precisione orizzontale stimata dal telefono (m) |
 | GPSMapDatum | `WGS-84` |
-| Make, Model, Software | dispositivo e `Campata 1.0.0` |
+| Make, Model, Software | dispositivo e `Campata 1.1.0` |
 | ImageDescription | `Opera: … \| Campata: … \| Elemento: … \| Difetto: …` (visibile in Esplora risorse, exiftool, Lightroom) |
 | UserComment | JSON con tutti i campi, età del fix e sorgente, per elaborazioni automatiche |
 

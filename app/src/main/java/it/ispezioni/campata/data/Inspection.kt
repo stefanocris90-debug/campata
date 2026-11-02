@@ -59,6 +59,30 @@ class TagStore(ctx: Context) {
             .putString("$k|difetto", t.difetto)
             .apply()
     }
+
+    /**
+     * Dopo la rinomina di una cartella i dati di ispezione (indicizzati per percorso)
+     * seguono la cartella e le sue sottocartelle. Se l'Opera era il vecchio nome
+     * della cartella (valore predefinito), viene aggiornata al nuovo nome.
+     */
+    fun movePrefix(from: File, to: File) {
+        val a = from.absolutePath
+        val b = to.absolutePath
+        val e = p.edit()
+        for ((key, value) in p.all) {
+            val path = key.substringBeforeLast('|')
+            val field = key.substringAfterLast('|')
+            val newPath = when {
+                path == a -> b
+                path.startsWith("$a/") -> b + path.substring(a.length)
+                else -> continue
+            }
+            var v = value as? String ?: continue
+            if (path == a && field == "opera" && v == from.name) v = to.name
+            e.remove(key).putString("$newPath|$field", v)
+        }
+        e.apply()
+    }
 }
 
 object Naming {
@@ -90,7 +114,7 @@ object Exif {
      * ImageDescription: testo leggibile da Windows, exiftool, Lightroom.
      * UserComment: JSON completo per elaborazioni successive.
      */
-    fun write(file: File, loc: Location?, fixAgeS: Long?, t: InspectionTags) {
+    fun write(file: File, loc: Location?, fixAgeS: Long?, t: InspectionTags, zoom: Float? = null) {
         val exif = ExifInterface(file.absolutePath)
         val now = Date()
         val stamp = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(now)
@@ -107,7 +131,7 @@ object Exif {
             exif.setAttribute(ExifInterface.TAG_MAKE, ascii(Build.MANUFACTURER))
         if (exif.getAttribute(ExifInterface.TAG_MODEL).isNullOrBlank())
             exif.setAttribute(ExifInterface.TAG_MODEL, ascii(Build.MODEL))
-        exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Campata 1.0.0")
+        exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Campata 1.1.0")
 
         if (loc != null) {
             exif.setGpsInfo(loc)
@@ -127,6 +151,7 @@ object Exif {
             put("difetto", t.difetto)
             put("scatto", stamp + offset)
             put("dispositivo", "${Build.MANUFACTURER} ${Build.MODEL}")
+            if (zoom != null && zoom > 0f) put("zoom", (zoom * 10).roundToInt() / 10.0)
             if (loc != null) {
                 put("datum", "WGS84")
                 put("lat", loc.latitude)
@@ -184,6 +209,7 @@ object Exif {
         val scatto = listOf(
             "Data e ora" to formatExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL), exif.getAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL)),
             "Dispositivo" to make,
+            "Zoom" to (json?.optDouble("zoom")?.takeIf { !it.isNaN() }?.let { String.format(Locale.US, "%sx", fmtZoom(it)) } ?: "non registrato"),
             "Risoluzione" to if (opts.outWidth > 0) "${opts.outWidth} × ${opts.outHeight} px" else "n.d.",
             "Dimensione" to Storage.formatSize(f.length()),
             "Percorso" to f.absolutePath,
@@ -226,6 +252,9 @@ object Exif {
             SimpleDateFormat("d MMMM yyyy, HH:mm:ss", Locale.ITALY).format(d!!) + (offset?.let { " (UTC$it)" } ?: "")
         } catch (_: Exception) { s }
     }
+
+    private fun fmtZoom(z: Double): String =
+        if (z == Math.floor(z)) z.toInt().toString() else String.format(Locale.US, "%.1f", z)
 
     fun dms(v: Double, isLat: Boolean): String {
         val emi = if (isLat) (if (v >= 0) "N" else "S") else (if (v >= 0) "E" else "O")

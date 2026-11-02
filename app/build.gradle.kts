@@ -12,8 +12,8 @@ android {
         applicationId = "it.ispezioni.campata"
         minSdk = 26          // Android 8.0+
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     // Keystore incluso nel progetto: tutte le build hanno la stessa firma,

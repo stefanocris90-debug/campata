@@ -3,6 +3,8 @@ package it.ispezioni.campata.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraMetadata
 import android.location.Location
 import android.media.MediaScannerConnection
 import android.os.Build
@@ -12,12 +14,16 @@ import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.ZoomState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
@@ -32,6 +38,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,8 +67,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -87,11 +92,13 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -115,9 +122,16 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 /** Oltre questa età il fix non viene scritto nella foto: meglio nessuna coordinata che una sbagliata. */
 private const val MAX_FIX_AGE_S = 120L
+
+/** Preset come nella fotocamera di sistema. 0.5x usa l'ultragrandangolo, oltre il tele ottico lo zoom è digitale. */
+private val ZOOM_PRESETS = listOf(0.5f, 1f, 2f, 3f, 5f, 30f)
+
+private fun zoomLabel(z: Float): String =
+    if (abs(z - Math.round(z)) < 0.05f) "${Math.round(z)}" else String.format(Locale.US, "%.1f", z)
 
 private fun granted(ctx: Context, p: String) =
     ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
@@ -182,7 +196,18 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
     var camera by remember { mutableStateOf<Camera?>(null) }
     var camError by remember { mutableStateOf<String?>(null) }
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
-    var zoom by remember { mutableFloatStateOf(0f) }
+    // Zoom: rapporto della camera collegata + eventuale ultragrandangolo separato
+    var camRatio by remember { mutableFloatStateOf(1f) }
+    var camMin by remember { mutableFloatStateOf(1f) }
+    var camMax by remember { mutableFloatStateOf(1f) }
+    var mainMin by remember { mutableFloatStateOf(1f) }
+    var mainMax by remember { mutableFloatStateOf(1f) }
+    var useWide by remember { mutableStateOf(false) }
+    var wideId by remember { mutableStateOf<String?>(null) }
+    var wideFactor by remember { mutableFloatStateOf(1f) }
+    var wideProbed by remember { mutableStateOf(false) }
+    var pendingRatio by remember { mutableFloatStateOf(1f) }
+    val effectiveZoom = if (useWide) wideFactor * camRatio else camRatio
     var busy by remember { mutableStateOf(false) }
     var lastPhoto by remember { mutableStateOf<File?>(null) }
     var count by remember { mutableIntStateOf(0) }
@@ -216,7 +241,7 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
         onDispose { l.disable() }
     }
 
-    DisposableEffect(lifecycleOwner, camOk) {
+    DisposableEffect(lifecycleOwner, camOk, useWide) {
         var provider: ProcessCameraProvider? = null
         if (camOk) {
             val future = ProcessCameraProvider.getInstance(ctx)
@@ -226,7 +251,15 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
                     provider = p
                     val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
                     p.unbindAll()
-                    camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture)
+                    val id = wideId
+                    val selector = if (useWide && id != null) selectorFor(id) else CameraSelector.DEFAULT_BACK_CAMERA
+                    val cam = p.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture)
+                    if (!wideProbed) {
+                        wideProbed = true
+                        findUltraWide(p, cam.cameraInfo)?.let { (wid, f) -> wideId = wid; wideFactor = f }
+                    }
+                    cam.cameraControl.setZoomRatio(pendingRatio)
+                    camera = cam
                     camError = null
                 } catch (e: Exception) {
                     camError = "Fotocamera non disponibile: ${e.message ?: "errore sconosciuto"}"
@@ -239,6 +272,56 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
         }
     }
 
+    // Stato zoom reale della camera (minimo/massimo dipendono dal telefono)
+    DisposableEffect(camera) {
+        val cam = camera
+        val obs = Observer<ZoomState> { z ->
+            camRatio = z.zoomRatio; camMin = z.minZoomRatio; camMax = z.maxZoomRatio
+            if (!useWide) { mainMin = z.minZoomRatio; mainMax = z.maxZoomRatio }
+        }
+        cam?.cameraInfo?.zoomState?.observe(lifecycleOwner, obs)
+        onDispose { cam?.cameraInfo?.zoomState?.removeObserver(obs) }
+    }
+
+    fun switchCamera(wide: Boolean, ratio: Float) {
+        pendingRatio = ratio
+        camera = null          // blocca altri comandi finché la nuova camera non è pronta
+        useWide = wide
+    }
+
+    fun setZoom(target: Float) {
+        val cam = camera ?: return
+        if (target < 1f) {
+            when {
+                mainMin < 0.99f -> if (useWide) switchCamera(false, maxOf(target, mainMin))
+                    else cam.cameraControl.setZoomRatio(maxOf(target, mainMin))
+                wideId != null -> {
+                    val r = (target / wideFactor).coerceAtLeast(1f)
+                    if (useWide) cam.cameraControl.setZoomRatio(r.coerceIn(camMin, camMax)) else switchCamera(true, r)
+                }
+                else -> message = "Questo telefono non rende disponibile l'ultragrandangolo alle app: zoom minimo 1x" to C.Corten
+            }
+        } else {
+            val r = target.coerceIn(mainMin, maxOf(mainMax, 1f))
+            if (useWide) switchCamera(false, r) else cam.cameraControl.setZoomRatio(r)
+            if (target > mainMax + 0.01f)
+                message = "Zoom massimo di questo telefono: ${zoomLabel(mainMax)}x" to C.Corten
+        }
+    }
+
+    /** Pinch come nella fotocamera di sistema, con passaggio automatico ultragrandangolo/principale. */
+    fun pinch(factor: Float) {
+        val cam = camera ?: return
+        val eff = effectiveZoom * factor
+        if (useWide) {
+            if (eff >= 1f) switchCamera(false, 1f)
+            else cam.cameraControl.setZoomRatio((eff / wideFactor).coerceIn(camMin, camMax))
+        } else {
+            if (eff < 0.97f && mainMin >= 0.99f && wideId != null && camRatio <= 1.01f) switchCamera(true, 1f / wideFactor * 0.97f)
+            else cam.cameraControl.setZoomRatio(eff.coerceIn(mainMin, mainMax))
+        }
+    }
+
     fun capture() {
         if (busy || camera == null) return
         busy = true
@@ -246,6 +329,7 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
         val age = current?.let { GpsTracker.ageSeconds(it, SystemClock.elapsedRealtimeNanos()) }
         val fix: Location? = current?.takeIf { age != null && age <= MAX_FIX_AGE_S && locOk }
         val snapTags = tags
+        val zoomAtShot = effectiveZoom
         store.save(dir, snapTags)
         val target = Naming.newPhotoFile(dir, snapTags)
         scope.launch { shutterFlash.snapTo(0.75f); shutterFlash.animateTo(0f, tween(320)) }
@@ -258,7 +342,7 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
                     scope.launch {
                         val err = withContext(Dispatchers.IO) {
                             try {
-                                Exif.write(target, fix, age, snapTags)
+                                Exif.write(target, fix, age, snapTags, zoomAtShot)
                                 MediaScannerConnection.scanFile(ctx, arrayOf(target.absolutePath), arrayOf("image/jpeg"), null)
                                 null
                             } catch (e: Exception) { e.message ?: "errore EXIF" }
@@ -285,7 +369,9 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
     Box(Modifier.fillMaxSize().background(C.Night)) {
         if (camOk) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
-            Reticle(Modifier.fillMaxSize().pointerInput(camera) {
+            Reticle(Modifier.fillMaxSize().pointerInput(Unit) {
+                detectTransformGestures { _, _, z, _ -> if (z != 1f) pinch(z) }
+            }.pointerInput(camera) {
                 detectTapGestures { off ->
                     val cam = camera ?: return@detectTapGestures
                     val pt = previewView.meteringPointFactory.createPoint(off.x, off.y)
@@ -373,21 +459,14 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
             }
             Column(Modifier.fillMaxWidth().background(C.NightPanel).padding(bottom = 18.dp)) {
                 TagStrip(tags = tags, onEdit = { tagsOpen = true })
-                Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        String.format(Locale.ITALY, "Zoom %d%%", (zoom * 100).toInt()),
-                        style = DataStyle, fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f),
-                        modifier = Modifier.width(76.dp),
-                    )
-                    Slider(
-                        value = zoom,
-                        onValueChange = { zoom = it; camera?.cameraControl?.setLinearZoom(it) },
-                        colors = SliderDefaults.colors(
-                            thumbColor = C.HiVis, activeTrackColor = C.HiVis, inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-                        ),
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                ZoomBar(
+                    current = effectiveZoom,
+                    wideAvailable = mainMin < 0.99f || wideId != null,
+                    maxZoom = mainMax,
+                    enabled = camera != null,
+                    onSelect = ::setZoom,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp, bottom = 10.dp),
+                )
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 28.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -492,6 +571,88 @@ private fun TagStrip(tags: InspectionTags, onEdit: () -> Unit) {
         Icon(Icons.Outlined.Edit, contentDescription = "Modifica dati ispezione", tint = Color.White.copy(alpha = 0.7f))
     }
 }
+
+/**
+ * Barra zoom stile fotocamera di sistema: pulsanti tondi, quello attivo più grande e giallo
+ * mostra il valore reale (es. 2.4x dopo un pinch). I preset non supportati dal telefono
+ * restano visibili ma attenuati; toccandoli si va al limite del telefono.
+ */
+@Composable
+private fun ZoomBar(
+    current: Float,
+    wideAvailable: Boolean,
+    maxZoom: Float,
+    enabled: Boolean,
+    onSelect: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val active = ZOOM_PRESETS.indexOfLast { current >= it * 0.97f }.coerceAtLeast(0)
+    Row(
+        modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ZOOM_PRESETS.forEachIndexed { i, p ->
+            val isActive = i == active
+            val available = if (p < 1f) wideAvailable else p <= maxZoom + 0.01f || p == 1f
+            val exact = abs(current - p) < 0.05f
+            val label = if (isActive && !exact) "${zoomLabel(current)}x" else "${zoomLabel(p)}x"
+            Box(
+                Modifier
+                    .size(if (isActive) 48.dp else 40.dp)
+                    .clip(CircleShape)
+                    .background(if (isActive) Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.12f))
+                    .alpha(if (available) 1f else 0.4f)
+                    .clickable(enabled = enabled) { onSelect(p) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = DataStyle,
+                    fontSize = if (isActive) 14.sp else 12.sp,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isActive) C.HiVis else Color.White,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Cerca una camera posteriore con campo visivo più ampio della principale (ultragrandangolo
+ * esposto come camera separata, tipico di molti Android). Restituisce id e fattore di zoom
+ * equivalente rispetto alla principale (es. 0.55), oppure null.
+ */
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+private fun findUltraWide(provider: ProcessCameraProvider, main: CameraInfo): Pair<String, Float>? = try {
+    fun fov(info: CameraInfo): Float? {
+        val c = Camera2CameraInfo.from(info)
+        val f = c.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull() ?: return null
+        val sensor = c.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return null
+        return if (f > 0f) sensor.width / f else null
+    }
+    val mainId = Camera2CameraInfo.from(main).cameraId
+    val mainFov = fov(main)
+    if (mainFov == null) null else provider.availableCameraInfos
+        .filter {
+            val c = Camera2CameraInfo.from(it)
+            c.cameraId != mainId &&
+                c.getCameraCharacteristic(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
+        }
+        .mapNotNull { info -> fov(info)?.let { Camera2CameraInfo.from(info).cameraId to it } }
+        .filter { it.second > mainFov * 1.25f }
+        .maxByOrNull { it.second }
+        ?.let { (id, w) -> id to (mainFov / w) }
+} catch (_: Exception) {
+    null
+}
+
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+private fun selectorFor(id: String): CameraSelector =
+    CameraSelector.Builder()
+        .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == id } }
+        .build()
 
 @Composable
 private fun Shutter(busy: Boolean, onClick: () -> Unit) {
