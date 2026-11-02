@@ -312,7 +312,8 @@ fun CameraScreen(dir: File, onClose: () -> Unit, onOpenPhoto: (File) -> Unit) {
     /** Pinch come nella fotocamera di sistema, con passaggio automatico ultragrandangolo/principale. */
     fun pinch(factor: Float) {
         val cam = camera ?: return
-        val eff = effectiveZoom * factor
+        // letto dagli state (non dal valore della composizione): il gestore pinch vive oltre le ricomposizioni
+        val eff = (if (useWide) wideFactor * camRatio else camRatio) * factor
         if (useWide) {
             if (eff >= 1f) switchCamera(false, 1f)
             else cam.cameraControl.setZoomRatio((eff / wideFactor).coerceIn(camMin, camMax))
